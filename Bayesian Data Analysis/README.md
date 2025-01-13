@@ -1,0 +1,1 @@
+Above project is heavily influenced by the book Bayesian Data Analysis, Third Edition by Aki Vehtari and Andrew Gelman. I have practical code implementations (in R) demonstrate key concepts such as Bayesian inference and visualization, posterior computation, predictive checks, and model interpretation
