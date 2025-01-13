@@ -1,0 +1,499 @@
+---
+title: "Dose-Response Experiment with Bayesian method"
+author: "Shejuty Devnath"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include = FALSE}
+library(knitr)
+```
+
+
+At first lets recall what we have so far from Biossay Experiment, Dose-Response Logistic Model, ( It is from BDA3, chapter 3) Following is the code of regenerating the data and the models:
+
+```{r table 3.1}
+# Dose in log(g/ml)
+X = c(-0.86,-0.30,-0.05,0.73)
+N = rep(5,4)
+# Deaths
+Y = c(0,1,3,5)
+# Table 3.1
+knitr::kable(cbind(X,N,Y))
+```
+
+
+```{r Contours}
+post.log <- function(a,b,Y,N,X){
+  # in log scale is easier and more stable
+  l.log <- -Y[1]*log(1+exp(-a -b*X[1])) + (N[1]-Y[1])*log(1-1/(1+exp(-a -b*X[1])))
+  for(i in 2:length(X)){
+    l.log = l.log - Y[i]*log(1+exp(-a -b*X[i])) + (N[i]-Y[i])*log(1-1/(1+exp(-a -b*X[i])))
+  }
+  return(l.log)
+}
+
+L.grid <- 200 #number of points in the grid
+
+alpha <- seq(-5,10,length.out=L.grid)
+beta <- seq(-10,40,length.out=L.grid)
+
+Post <- matrix(0,L.grid,L.grid)
+for(i in 1:L.grid){
+  for(j in 1:L.grid){
+    Post[i,j] <- post.log(alpha[i],beta[j],Y,N,X)
+  }
+}
+# contour levels
+Post <- exp(Post - max(Post,na.rm = TRUE))
+lev =  seq(0.05,1,by=0.05)
+base = (alpha[2]-alpha[1])*(beta[2]-beta[1])
+Post[is.nan(Post)] <- 0
+N.Post <- Post/sum(Post*base, na.rm = TRUE)
+```
+
+
+*Project agenda is focusing on following question*
+
+1. Draw a 1000 random draws ($α^s$, $β^s$) from the joint posterior following the procedure outlined in the
+book, i.e., the inverse cdf method. Make a scatter plot. It should look like Fig 3.3 (b) from book BDA3
+
+
+We can sample 1000 random draws $(\alpha^s,\beta^s)$ from the posterior distribution using the following procedure, namely the Inverse CDF method.
+
+1. Compute the marginal posterior of $\alpha$, $p(\alpha|y)$, by summing over $\beta$ in the discrete approximation computed on the grid.
+
+2. For $s=1,\ldots,1000$:
+(a) Draw $\alpha^s$ from the discretely computed $p(\alpha|y)$ using the inverse cdf method:
+\[\mbox{Draw }r\sim U[0,1] \mbox{ if } \sum_{l=1}^j p(\alpha_l|y) \leq r \leq \sum_{l=1}^{j+1} p(\alpha_l|y)\] \[ \Rightarrow \mbox{set } \alpha^s = \alpha_{j+1}\]
+
+(b) Draw $\beta^s$ from the discrete conditional distribution, $p(\beta| \alpha, y)$, given the just-sampled value of $\alpha$. Again the inverse cdf method applies.
+(c) For each of the sampled values, add a uniform random jitter centered at zero with a width equal to the spacing of the sampling grid. This gives the simulation draws a continuous distribution. 
+
+Following I am applying the procedure:
+
+```{r}
+#marginal posterior of alpha by summing over beta
+p_alpha_y <- rowSums(N.Post)  # Sum over rows to marginalize over beta
+p_alpha_y <- p_alpha_y / sum(p_alpha_y)  
+
+# Function to sample alpha^s using inverse CDF method
+sample_alpha <- function(p_alpha_y, alpha_values) {
+  r <- runif(1)  
+  cumulative_prob <- cumsum(p_alpha_y)
+  j <- which(cumulative_prob >= r)[1] 
+  return(alpha_values[j])
+}
+
+alpha_values <- seq(-2, 8, length.out=L.grid) 
+alpha_samples <- replicate(1000,sample_alpha(p_alpha_y,alpha_values))
+beta_values <- seq(-10, 20, length.out = L.grid)  
+
+# Function to sample beta^s given alpha^s using inverse CDF method
+sample_beta <- function(alpha_sample, alpha_values, Post) {
+  
+  alpha_index <- which.min(abs(alpha_values - alpha_sample))  
+  
+  p_beta_given_alpha <- Post[alpha_index,]
+  
+  p_beta_given_alpha <- p_beta_given_alpha / sum(p_beta_given_alpha, na.rm = TRUE)
+  
+  # Draw a sample for beta using inverse CDF method
+  r <- runif(1)
+  cumulative_prob <- cumsum(p_beta_given_alpha)
+  j <- which(cumulative_prob >= r)[1]  #
+  return(beta_values[j])
+}
+
+# sample 1000 pairs of (alpha^s, beta^s)
+
+beta_samples <- sapply(alpha_samples, sample_beta, alpha_values = alpha_values, Post = N.Post)
+
+alpha_spacing <- alpha_values[2] - alpha_values[1]
+beta_spacing <- beta_values[2] - beta_values[1]
+
+# Add uniform jitter to each sample
+ 
+alpha_samples_continuous <- alpha_samples + runif(length(alpha_samples), -alpha_spacing / 2, alpha_spacing / 2)
+beta_samples_continuous <- beta_samples + runif(length(beta_samples), -beta_spacing / 2, beta_spacing / 2)
+
+plot(alpha_samples_continuous, beta_samples_continuous, 
+     xlab = "Alpha", ylab = "Beta", main = "Scatter Plot of Alpha vs Beta",
+     pch = 20)
+```
+
+
+
+*2 Draw a 1000 random draws ($α^s$, $β^s$) from the joint posterior following an alternative method. Make a scatter plot. It should look like Fig 3.3 (b)*
+
+An alternative method to draw a 1000 random draws is rejection sampling, following the method:
+
+
+```{r}
+alpha <- seq(-5, 10, length.out = L.grid)
+beta <- seq(-10, 40, length.out = L.grid)
+
+alpha_vals <- rep(alpha, each = L.grid)
+beta_vals <- rep(beta, times = L.grid)
+flat_posterior <- as.vector(N.Post)
+flat_posterior[is.na(flat_posterior)] <- 0  
+
+flat_posterior <- flat_posterior / sum(flat_posterior)
+
+n_samples <- 1000
+sample_indices <- sample(1:length(flat_posterior), size = n_samples, replace = TRUE, prob = flat_posterior)
+alpha_samples <- alpha_vals[sample_indices]
+beta_samples <- beta_vals[sample_indices]
+
+plot(alpha_samples, beta_samples, xlab = expression(alpha), ylab = expression(beta),
+     main = "Scatter Plot of Sampled Alpha and Beta Values (Rejection Sampling)", pch = 20, col = "black",
+     xlim = c(-5, 10), ylim = c(-10, 40))
+
+```
+
+
+
+*3. Compare the results*
+
+Let's take a side by side look at the scatterplot.
+
+```{r}
+par(mfrow = c(1, 2))  
+
+plot(alpha_samples, beta_samples,
+     xlab = expression(alpha), ylab = expression(beta), main = "Alternative Sampling Method",
+     pch = 20, col = "blue", xlim = c(-5, 10), ylim = c(-10, 40))
+
+plot(alpha_samples_continuous, beta_samples_continuous,
+     xlab = expression(alpha), ylab = expression(beta), main = "Inverse CDF Method",
+     pch = 20, col ="red", xlim = c(-5, 10), ylim = c(-10, 40))
+
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Summary statistics comparison
+cat("Summary Statistics for Alternative Sampling Method:\n")
+cat("Alpha - Mean:", mean(alpha_samples), "SD:", sd(alpha_samples), "\n")
+cat("Beta - Mean:", mean(beta_samples), "SD:", sd(beta_samples), "\n\n")
+
+cat("Summary Statistics for Inverse CDF Method:\n")
+cat("Alpha - Mean:", mean(alpha_samples_continuous), "SD:", sd(alpha_samples_continuous), "\n")
+cat("Beta - Mean:", mean(beta_samples_continuous), "SD:", sd(beta_samples_continuous), "\n")
+```
+
+
+
+*4. For both samples, calculate the posterior distribution of LD50 as discussed in BDA3, page 77.*
+
+
+```{r}
+
+ld50_rejection <- -alpha_samples / beta_samples
+ld50_inverse_cdf <- -alpha_samples_continuous / beta_samples_continuous
+par(mfrow = c(1, 2))
+hist(ld50_rejection, breaks = 30, main = "Posterior of LD50 (Alternative Method)", 
+     xlab = "LD50", col = rgb(0.2, 0.4, 0.6, 0.5))
+hist(ld50_inverse_cdf, breaks = 30, main = " (Inverse CDF Method)", 
+     xlab = "LD50", col = rgb(0.8, 0.3, 0.3, 0.5))
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# Summary statistics for LD50
+cat("Summary Statistics for LD50 (Alternative Sampling Method):\n")
+cat("Mean:", mean(ld50_rejection), "SD:", sd(ld50_rejection), "\n\n")
+
+cat("Summary Statistics for LD50 (Inverse CDF Method):\n")
+cat("Mean:", mean(ld50_inverse_cdf), "SD:", sd(ld50_inverse_cdf), "\n")
+```
+
+
+*5. Computation: in the bioassay example, replace the uniform prior density by a joint normal prior distribution on (α, β), with α ∼ N(0, 22), β ∼ N(10, 102), and corr(α, β)=0.5. (a) Repeat all the computations and plots of Section 3.7 with this new prior distribution*
+
+Part a:
+
+Model Specification Observation:
+
+\[
+y_i \mid \theta_i \sim \text{Binomial}(n_i, \theta_i)
+\]
+
+
+\[
+\text{Logit}(\theta_i) = \alpha + \beta x_i
+\]
+
+
+\[
+\alpha \sim \text{Normal}(0, 2^2)
+\]
+
+\[
+\beta \sim \text{Normal}(10, 10^2)
+\]
+
+
+```{r}
+library(MASS)  
+mu <- c(0, 10)
+Sigma <- matrix(c(4, 10, 10, 100), nrow = 2)
+Sigma_inv <- solve(Sigma)
+log_prior_const <- -0.5 * log(2 * pi * det(Sigma))
+
+post.log <- function(a, b, Y, N, X) {
+  # Computing log-likelihood 
+  l.log <- 0
+  for (i in 1:length(X)) {
+    prob <- plogis(a + b * X[i])
+    l.log <- l.log + Y[i] * log(prob) + (N[i] - Y[i]) * log(1 - prob)
+  }
+  
+  # Computing log-prior
+  theta <- c(a, b)
+  log_prior <- log_prior_const - 0.5 * t(theta - mu) %*% Sigma_inv %*% (theta - mu)
+    # Combining log-likelihood and log-prior
+  return(l.log + log_prior)
+}
+L.grid <- 200
+alpha <- seq(-5, 10, length.out = L.grid)
+beta <- seq(-10, 40, length.out = L.grid)
+
+Post <- matrix(NA, L.grid, L.grid)
+for (i in 1:L.grid) {
+  for (j in 1:L.grid) {
+    Post[i, j] <- post.log(alpha[i], beta[j], Y, N, X)
+  }
+}
+Post <- exp(Post - max(Post, na.rm = TRUE))
+lev <- seq(0.05, 0.95, by = 0.05)
+contour(alpha, beta, Post, levels = lev, drawlabels = FALSE,
+        xlab = "Alpha", ylab = "Beta", main = "Posterior Contour Plot")
+```
+
+```{r}
+base = (alpha[2]-alpha[1])*(beta[2]-beta[1])
+base
+sum(Post)
+sum(Post, na.rm = TRUE)
+Post[is.nan(Post)] <- 0
+sum(Post)
+N.Post <- Post/sum(Post*base, na.rm = TRUE)
+sum(N.Post*base)
+```
+
+Below I am drawing a 1000 random draws (αs, βs) from the new joint posterior (with a new prior distribution specified in part a) following the procedure outlined in the book, i.e., the inverse cdf method. And I will make a scatter plot. 
+
+```{r}
+p_alpha_y <- rowSums(N.Post) 
+p_alpha_y <- p_alpha_y / sum(p_alpha_y)
+sample_alpha <- function(p_alpha_y, alpha_values) {
+  r <- runif(1)  
+  cumulative_prob <- cumsum(p_alpha_y)
+  j <- which(cumulative_prob >= r)[1]  
+  return(alpha_values[j])
+}
+
+alpha_values <- seq(-2, 8, length.out=L.grid)  
+alpha_samples <- replicate(1000, sample_alpha(p_alpha_y, alpha_values))
+beta_values <- seq(-10, 20, length.out = L.grid)  
+
+sample_beta <- function(alpha_sample, alpha_values, Post) {
+  
+  alpha_index <- which.min(abs(alpha_values - alpha_sample))  
+  
+  p_beta_given_alpha <- Post[alpha_index, ]
+   p_beta_given_alpha <- p_beta_given_alpha / sum(p_beta_given_alpha, na.rm = TRUE)
+  r <- runif(1)
+  cumulative_prob <- cumsum(p_beta_given_alpha)
+  j <- which(cumulative_prob >= r)[1]  
+  return(beta_values[j])
+}
+
+beta_samples <- sapply(alpha_samples, sample_beta, alpha_values = alpha_values, Post = N.Post)
+
+alpha_spacing <- alpha_values[2] - alpha_values[1]
+beta_spacing <- beta_values[2] - beta_values[1]
+
+alpha_samples_continuous <- alpha_samples + runif(length(alpha_samples), -alpha_spacing / 2, alpha_spacing / 2)
+beta_samples_continuous <- beta_samples + runif(length(beta_samples), -beta_spacing / 2, beta_spacing / 2)
+
+plot(alpha_samples_continuous, beta_samples_continuous, 
+     xlab = "Alpha", ylab = "Beta", main = "Scatter Plot of Alpha vs Beta",
+     pch = 20, col = "blue")
+
+```
+
+
+
+*(b) Check that your contour plot and scatterplot look like a compromise between the prior distribution and the likelihood (as displayed in Figure 3.3)*
+
+part b
+
+```{r}
+library(ggplot2) 
+
+L.grid <- 100
+alpha <- seq(-5, 8, length.out = L.grid)
+beta <- seq(-10, 30, length.out = L.grid)
+grid <- expand.grid(alpha = alpha, beta = beta)
+
+prior_only <- function(a, b) {
+  theta <- c(a, b)
+  log_prior <- -0.5 * t(theta - mu) %*% Sigma_inv %*% (theta - mu)
+  return(exp(log_prior))
+}
+
+likelihood_only <- function(a, b, Y, N, X) {
+  l.log <- 0
+  for (i in 1:length(X)) {
+    prob <- plogis(a + b * X[i])  
+    l.log <- l.log + Y[i] * log(prob) + (N[i] - Y[i]) * log(1 - prob)
+  }
+  return(exp(l.log))
+}
+
+posterior <- function(a, b) {
+  log_post <- post.log(a, b, Y, N, X)  
+  return(exp(log_post))
+}
+
+grid$Prior <- apply(grid, 1, function(row) prior_only(row["alpha"], row["beta"]))
+grid$Likelihood <- apply(grid, 1, function(row) likelihood_only(row["alpha"], row["beta"], Y, N, X))
+grid$Posterior <- apply(grid, 1, function(row) posterior(row["alpha"], row["beta"]))
+
+grid$Prior <- grid$Prior / max(grid$Prior)
+grid$Likelihood <- grid$Likelihood / max(grid$Likelihood)
+grid$Posterior <- grid$Posterior / max(grid$Posterior)
+
+ggplot(grid, aes(x = alpha, y = beta)) +
+  geom_contour(aes(z = Prior), color = "yellow") +
+  geom_contour(aes(z = Likelihood), color = "blue") +
+  geom_contour(aes(z = Posterior), color = "red") +
+  labs(title = "Contour Plot: Prior (yellow), Likelihood (blue), and Posterior (red)",
+       x = "Alpha", y = "Beta") +
+  theme_minimal()
+```
+
+
+We can see that the red joint is a compromise of the yellow prior and blue data likelihoods.
+
+*(c) Discuss the effect of this hypothetical prior information on the conclusions in the applied context.*
+
+The prior doesn't change the posterior mode much but reduces the uncertainty in the positive area.
+
+*Repeat problems 1 - 4*
+
+I have already executed 1000 draws using Inverse CDF method. I also made a scatterplot Please look at part (a) of question 5.
+
+*Repeating problem 2*
+
+Now below I am executing 1000 draws by my previous alternative method which is rejection sampling method.
+
+
+```{r}
+set.seed(123)  
+mu <- c(0, 10)
+Sigma <- matrix(c(4, 10, 10, 100), nrow = 2)
+Sigma_inv <- solve(Sigma)
+log_prior_const <- -0.5 * log(2 * pi * det(Sigma))
+
+post.log <- function(a, b, Y, N, X) {
+  # Computing log-likelihood 
+  l.log <- 0
+  for (i in 1:length(X)) {
+    prob <- plogis(a + b * X[i])
+    l.log <- l.log + Y[i] * log(prob) + (N[i] - Y[i]) * log(1 - prob)
+  }
+  
+  # Computing log-prior
+  theta <- c(a, b)
+  log_prior <- log_prior_const - 0.5 * t(theta - mu) %*% Sigma_inv %*% (theta - mu)
+    # Combining log-likelihood and log-prior
+  return(l.log + log_prior)
+}
+L.grid <- 200
+alpha <- seq(-5, 10, length.out = L.grid)
+beta <- seq(-10, 40, length.out = L.grid)
+
+Post <- matrix(NA, L.grid, L.grid)
+for (i in 1:L.grid) {
+  for (j in 1:L.grid) {
+    Post[i, j] <- post.log(alpha[i], beta[j], Y, N, X)
+  }
+}
+Post <- exp(Post - max(Post, na.rm = TRUE))
+base = (alpha[2]-alpha[1])*(beta[2]-beta[1])
+Post[is.nan(Post)] <- 0
+N.Post <- Post/sum(Post*base, na.rm = TRUE)
+
+alpha <- seq(-5, 10, length.out = L.grid)
+beta <- seq(-10, 40, length.out = L.grid)
+
+alpha_vals <- rep(alpha, each = L.grid)
+beta_vals <- rep(beta, times = L.grid)
+flat_posterior <- as.vector(N.Post)
+flat_posterior[is.na(flat_posterior)] <- 0  
+
+flat_posterior <- flat_posterior / sum(flat_posterior)
+
+n_samples <- 1000
+sample_indices <- sample(1:length(flat_posterior), size = n_samples, replace = TRUE, prob = flat_posterior)
+alpha_samples <- alpha_vals[sample_indices]
+beta_samples <- beta_vals[sample_indices]
+
+plot(alpha_samples, beta_samples, xlab = expression(alpha), ylab = expression(beta),
+     main = "Scatter Plot of Sampled Alpha and Beta Values (Rejection Sampling)", pch = 20, col = "black",
+     xlim = c(-5, 10), ylim = c(-10, 40))
+
+```
+
+*Repeating problem 3*
+
+```{r}
+par(mfrow = c(1, 2))  
+plot(alpha_samples, beta_samples,
+     xlab = expression(alpha), ylab = expression(beta), main = "Alternative Sampling Method",
+     pch = 20, col = rgb(0.2, 0.4, 0.6, 0.5), xlim = c(-5, 10), ylim = c(-10, 40))
+plot(alpha_samples_continuous, beta_samples_continuous,
+     xlab = expression(alpha), ylab = expression(beta), main = "Inverse CDF Method",
+     pch = 20, col = rgb(0.8, 0.3, 0.3, 0.5), xlim = c(-5, 10), ylim = c(-10, 40))
+par(mfrow = c(1, 1)) 
+```
+
+```{r}
+# Summary statistics comparison
+cat("Summary Statistics for Rejection Sampling:\n")
+cat("Alpha - Mean:", mean(alpha_samples), "SD:", sd(alpha_samples), "\n")
+cat("Beta - Mean:", mean(beta_samples), "SD:", sd(beta_samples), "\n\n")
+
+cat("Summary Statistics for Inverse CDF Method:\n")
+cat("Alpha - Mean:", mean(alpha_samples_continuous), "SD:", sd(alpha_samples_continuous), "\n")
+cat("Beta - Mean:", mean(beta_samples_continuous), "SD:", sd(beta_samples_continuous), "\n")
+```
+
+*Repeating problem 4*
+
+```{r}
+
+ld50_rejection <- -alpha_samples / beta_samples
+ld50_inverse_cdf <- -alpha_samples_continuous / beta_samples_continuous
+
+par(mfrow = c(1, 2))  
+hist(ld50_rejection, breaks = 30, main = "Posterior of LD50 (Rejection Sampling)", 
+     xlab = "LD50", col = rgb(0.2, 0.4, 0.6, 0.5))
+
+hist(ld50_inverse_cdf, breaks = 30, main = "Posterior of LD50 (Inverse CDF Method)", 
+     xlab = "LD50", col = rgb(0.8, 0.3, 0.3, 0.5))
+
+par(mfrow = c(1, 1)) 
+```
+
+```{r}
+cat("Summary Statistics for LD50 (Rejection Sampling):\n")
+cat("Mean:", mean(ld50_rejection), "SD:", sd(ld50_rejection), "\n\n")
+cat("Summary Statistics for LD50 (Inverse CDF Method):\n")
+cat("Mean:", mean(ld50_inverse_cdf), "SD:", sd(ld50_inverse_cdf), "\n")
+```
